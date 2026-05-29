@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>코코바스켓 주문관리</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Noto Sans KR',sans-serif;background:#f0f2f5;color:#1a1a1a;min-height:100vh}
@@ -295,6 +297,9 @@ textarea:focus{outline:none;border-color:#2d7a4f}
         <button class="rtab" onclick="switchRegion('unjeong',this)">🟢 운정 <span id="cnt-unjeong" class="rbadge">0</span></button>
         <button class="rtab" onclick="switchRegion('goyang',this)">🔵 고양·기타 <span id="cnt-goyang" class="rbadge">0</span></button>
         <button onclick="window.print()" style="margin-left:auto;padding:6px 12px;border-radius:20px;border:1px solid #ddd;background:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">🖨️ 인쇄</button>
+        <button onclick="downloadDeliveryDoc('unjeong')" style="padding:6px 12px;border-radius:20px;border:1px solid #86efac;background:#dcfce7;color:#166534;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">📄 운정</button>
+        <button onclick="downloadDeliveryDoc('goyang')" style="padding:6px 12px;border-radius:20px;border:1px solid #93c5fd;background:#dbeafe;color:#1e40af;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">📄 고양</button>
+        <button onclick="downloadDeliveryDoc('all')" style="padding:6px 12px;border-radius:20px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">📄 전체</button>
       </div>
       <div class="delivery-cards" id="deliveryCards"></div>
     </div>
@@ -1991,6 +1996,95 @@ function showToast(msg, duration = 2500) {
   t.style.display = 'block';
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.style.display = 'none', duration);
+}
+
+// ===== 배송목록 Word 다운로드 =====
+async function downloadDeliveryDoc(region) {
+  const { Document, Packer, Table, TableRow, TableCell, Paragraph, TextRun, WidthType, AlignmentType } = docx;
+
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}년 ${today.getMonth()+1}월 ${today.getDate()}일`;
+  const regionLabel = region === 'unjeong' ? '운정' : region === 'goyang' ? '고양' : '전체';
+
+  // 동선순 정렬 (renderDelivery와 동일)
+  const sorted = [...parsedOrders.entries()]
+    .sort((a, b) => getRegionOrder(a[1].address) - getRegionOrder(b[1].address))
+    .map(([, o]) => o);
+
+  const filtered = region === 'all' ? sorted : sorted.filter(o => classifyRegion(o.address) === region);
+
+  if (!filtered.length) { showToast('주문 없음'); return; }
+
+  function cell(text, opts = {}) {
+    return new TableCell({
+      width: opts.width ? { size: opts.width, type: WidthType.DXA } : undefined,
+      shading: opts.bg ? { fill: opts.bg } : undefined,
+      children: [new Paragraph({
+        alignment: AlignmentType.LEFT,
+        children: (Array.isArray(text) ? text : [text]).map(t =>
+          new TextRun({ text: String(t), bold: !!opts.bold, size: opts.size || 18, font: '맑은 고딕', break: 0 })
+        ),
+      })],
+    });
+  }
+
+  function headerRow() {
+    return new TableRow({
+      tableHeader: true,
+      children: ['이름', '주소 / 비밀번호', '주문 내역', '합계'].map(t =>
+        new TableCell({
+          shading: { fill: '2d7a4f' },
+          children: [new Paragraph({
+            children: [new TextRun({ text: t, bold: true, size: 20, color: 'FFFFFF', font: '맑은 고딕' })]
+          })]
+        })
+      )
+    });
+  }
+
+  const dataRows = filtered.map(o => {
+    const name = (o.name || '?') + (o.phone ? '\n' + formatPhone(o.phone) : '');
+    const pw = (o.entry && o.entry !== '없음') ? o.entry : '비번없음';
+    const addr = (o.address || '') + '\n🔑 ' + pw;
+    const items = (o.items || []).map(i =>
+      `• ${i.name.replace(/[\u{1F300}-\u{1FFFF}]/gu, '').trim()}${i.qty > 1 ? ' ' + i.qty + '개' : ''}  ${(i.price * i.qty).toLocaleString()}원`
+    ).join('\n');
+    const total = o.total ? o.total.toLocaleString() + '원' : '';
+
+    return new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: name, size: 18, font: '맑은 고딕', bold: true })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: addr, size: 17, font: '맑은 고딕' })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: items, size: 17, font: '맑은 고딕' })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: total, size: 18, font: '맑은 고딕', bold: true, color: '2d6a4f' })] })] }),
+      ]
+    });
+  });
+
+  const doc = new Document({
+    sections: [{
+      properties: { page: { margin: { top: 720, bottom: 720, left: 720, right: 720 } } },
+      children: [
+        new Paragraph({
+          children: [new TextRun({ text: `🧺 코코바스켓 배송 목록`, bold: true, size: 32, font: '맑은 고딕' })],
+          spacing: { after: 80 },
+        }),
+        new Paragraph({
+          children: [new TextRun({ text: `${dateStr}  ·  ${regionLabel} (${filtered.length}건)`, size: 20, color: '888888', font: '맑은 고딕' })],
+          spacing: { after: 160 },
+        }),
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [headerRow(), ...dataRows],
+        }),
+      ]
+    }]
+  });
+
+  const blob = await Packer.toBlob(doc);
+  const mm = String(today.getMonth()+1).padStart(2,'0');
+  const dd = String(today.getDate()).padStart(2,'0');
+  saveAs(blob, `코코바스켓_배송목록_${regionLabel}_${mm}${dd}.docx`);
 }
 
 // 초기 로드 — 정적 DB 우선 적용 후 Supabase 병합
